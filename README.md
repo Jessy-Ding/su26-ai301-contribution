@@ -1,17 +1,23 @@
 # su26-ai301-contribution
 github-contribution-log for AI301 course at codepath
-# Contribution [#]: [Issue Title]
+# Contribution [TorchIO-project/torchio #1187]: [Image intensity augmentations]
 
-**Contribution Number:** [1 / 2 / 3]  
-**Student:** [Your Name]  
-**Issue:** [GitHub issue link]  
-**Status:** [Phase I / Phase II / Phase III / Phase IV] [In Progress / Complete]
+**Contribution Number:** [1]  
+**Student:** [Mengyuan Ding]  
+**Issue:** [GitHub issue link](https://github.com/TorchIO-project/torchio/issues/1187)
+**Status:** [Phase I] [In Progress]
+
+---
+
+## Problem Summary
+
+TorchIO issue #1187 requests new intensity-domain augmentation transforms for medical images — specifically intensity inversion (mapping each voxel x to max − x + min over the image's own range), along with related operations like cluster-remapping and contrast jitter. The motivation comes from a concrete clinical problem the issue author raised: models trained on a single MRI pulse sequence tend to latch onto intensity values as features and generalize poorly to other modalities with different intensity distributions. Intensity-shifting augmentations push a model to learn shape and contour instead of absolute intensity, improving cross-modality robustness. TorchIO currently ships only RandomGamma as an intensity-perturbing transform, and the maintainer (@romainVala) confirmed that inversion is "worth to add" because it makes a radical, physically meaningful change to contrast. My scope for this contribution is to implement the intensity-inversion transform cleanly — computing parameters per channel, applying it as a probabilistic on/off transform, leaving label maps untouched — with documentation and tests following the existing intensity-transform pattern, and to propose the remaining transforms as follow-up work.
 
 ---
 
 ## Why I Chose This Issue
 
-[1-2 paragraphs explaining why this issue interests you, how it matches your skills/learning goals, what you hope to learn]
+This issue sits at the intersection of what I already know and what I want to learn next. I come from computational neuroimaging and have worked across several projects with BIDS-formatted MRI data and PyTorch-based preprocessing and augmentation pipelines, so I'm comfortable with the data and tooling this transform lives in. I haven't worked specifically on intensity-based augmentation before, though — that's a deliberate part of the appeal. I understand the cross-modality generalization problem the issue describes, but implementing a transform to address it is new ground for me, and I expect to be learning the intensity-augmentation literature and TorchIO's internals as I build. What draws me most is the chance to contribute at the methods level to a recognized medical-imaging library rather than only applying existing tools: writing a transform other researchers will use is a different kind of work than running a pipeline, and it's the muscle I most want to develop. Concretely, I'm hoping to learn how a mature library structures its transform API and testing conventions, how to write code that meets the standards of maintainers I don't know, and how to scope and defend a design decision through real review — the exchange with the maintainer about whether this is a "random" versus a binary-state transform has already pushed me to think harder about the semantics of what I'm building, not just whether it runs.
 
 ---
 
