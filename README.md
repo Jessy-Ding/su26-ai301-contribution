@@ -217,8 +217,83 @@ benefit for this task" — itself a valuable result.
 ### Manual Testing
 
 - **Docs build**: `zensical build` → "No issues found" (verified the griffe `**kwargs` warning was resolved and the new nav entry renders).
-- **Efficacy experiment** (`experiments/intensity_inversion_eval.py`): synthetic polarity-holdout segmentation, 3 seeds, CPU. Result: OOD Dice **0.04 → 0.84**, in-domain **−0.02**, consistent across seeds; produced an overlay figure showing the baseline segmenting the inverted background while the inversion-trained model segments correctly.
+- **Efficacy experiments**: three stages (synthetic toy -> BraTS -> CHAOS), summarized in the dedicated **Efficacy Evaluation** section below. The synthetic toy showed a large gain (OOD Dice **0.04 -> 0.84**), but the properly-designed real-data follow-up (CHAOS liver, 8 seeds) found **no reliable benefit** (+0.017, within noise). The full honest conclusion is reported there.
 - **Flakiness hunt**: ran the suite 10× under randomized ordering + a 500-seed brute-force to confirm test tolerances were not RNG-fragile.
+
+---
+
+## Efficacy Evaluation (Layer 2): toy -> real data
+
+The maintainer asked for evidence that the transform *improves results in an
+application* before adding it. This took three stages. The honest bottom line:
+**`IntensityInversion` reliably helps only when the train->test shift is (close
+to) a global intensity-polarity flip. On real cross-modality MRI — even matched
+to the issue author's use case — I could not find a reliable benefit.**
+
+All three experiments share the same protocol: train Arm A (flip/affine/noise)
+vs Arm B (A + `IntensityInversion(p=0.5)`, the *only* added variable), seed-paired,
+report Dice on an out-of-distribution (OOD) test set plus an in-domain guard.
+
+### Stage 1 — Synthetic toy (controlled polarity flip) — POSITIVE
+
+Procedurally generated 2D shapes, foreground brighter than background; train on
+bright-foreground, test on inverted-contrast (a genuine polarity flip). The OOD
+set uses a *different* non-linear decreasing curve than the trained `max-x+min`,
+so a win reflects generalization, not memorization.
+
+| Test set | Arm A | Arm B | Δ |
+|---|---|---|---|
+| OOD (inverted) | 0.04 | **0.84** | **+0.79** (all 3 seeds) |
+| in-domain | 0.996 | 0.978 | −0.018 |
+
+So the transform does exactly what it claims **when the shift is actually a
+polarity flip**. Script: `experiments/intensity_inversion_eval.py`.
+
+### Stage 2 — BraTS cross-modality (first real attempt — MIS-DESIGNED)
+
+Maintainer feedback: *"I don't think the results with the toy data are
+significant enough … I'd like to see results on a real dataset and task."* Fair.
+
+First attempt: Medical Segmentation Decathlon Task01 (BraTS), train on one MRI
+sequence, test on another, whole-tumor segmentation. **This was the wrong test.**
+Whole-tumor (edema) is bright on FLAIR/T2 but *nearly absent on T1*, so the target
+*vanishes* across modalities — OOD Dice was ~0.12 for **both** arms (no signal for
+any augmentation to recover). I also had to switch the loss to Dice-only: with
+~3% foreground, an unweighted BCE term collapsed the model to all-background.
+This experiment does **not** represent the issue author's scenario, where the
+target is a structure visible in *every* modality. Reported here for transparency,
+not as evidence. Script: `experiments/brats_inversion_eval.py`.
+
+### Stage 3 — CHAOS cross-modality (use-case-matched) — NO RELIABLE BENEFIT
+
+The issue author's real situation: an anatomical structure visible in all
+modalities, where only the intensity distribution changes. The CHAOS dataset
+matches this — the same abdominal organs imaged in **T1-DUAL** and **T2-SPIR**.
+Liver segmentation, train on **T1 (in-phase)**, test on held-out **T2-SPIR**,
+Dice-only loss, **8 seeds**.
+
+| Test set | Arm A | Arm B | Δ |
+|---|---|---|---|
+| OOD (T2) | 0.211 ± 0.069 | 0.228 ± 0.062 | **+0.017** |
+| in-domain (T1) | 0.698 ± 0.022 | 0.667 ± 0.021 | −0.032 |
+
+Per-seed ΔOOD: `+0.057, +0.164, −0.018, −0.147, +0.048, −0.005, −0.103, +0.140`
+→ **4 up / 4 down**, swings of ±0.15. The gain is within noise. (A 3-seed run
+first looked like +0.068, but that was one lucky seed — adding seeds collapsed it
+to +0.017. This is exactly why statistical power matters, and why I will not
+report the 3-seed number.) Script: `experiments/chaos_inversion_eval.py`.
+
+### Interpretation & honest conclusion
+
+Real multi-sequence MRI intensity differences are **not** a global polarity
+inversion — they are non-linear, tissue-specific, and reshape the whole
+histogram. Inversion only addresses the polarity-flip component, which is not the
+dominant mode of real cross-modality variation, so it does not reliably bridge
+the gap. On this evidence, the efficacy case for cross-sequence generalization
+does **not** hold up, and the maintainer's skepticism was justified. The negative
+result is itself useful: it tells the issue author that intensity inversion alone
+will not solve their cross-modality problem. The implementation is correct and
+tested regardless; whether it is *useful enough to add* is the maintainer's call.
 
 ---
 
@@ -240,6 +315,19 @@ Found a pre-existing framework bug (filed as #1480): the transform history store
 Test flakiness: pytest-randomly reseeds the global RNG; default assert_close float32 tolerance (1e-5) was too tight for ×100 data round-trips (worst-case error ~1.5e-5). Applied the codebase's atol=1e-4 convention.
 Docs warning: added a no-op __init__(**kwargs) (mirroring Transpose) so the documented **kwargs resolves to a real signature.
 
+### Week 4 Progress: Efficacy under real data
+
+The maintainer rejected the toy as insufficient and asked for a real dataset and
+task. This was the hardest part of the contribution — see the **Efficacy
+Evaluation** section for full results. In short: (a) a first BraTS attempt was
+mis-designed (I segmented whole-tumor, which vanishes across modalities, so it did
+not model the use case, and the model also collapsed under an unweighted BCE loss
+on ~3% foreground); (b) I diagnosed and fixed both — switched to a structural
+target visible in every modality (liver on CHAOS T1<->T2) and a Dice-only loss;
+(c) the corrected, use-case-matched experiment showed **no reliable benefit**
+(8-seed OOD gain +0.017, within noise). I reported the negative result honestly
+rather than the misleading 3-seed +0.068 that one lucky seed produced.
+
 ### Code Changes
 
 - **Files modified:**
@@ -250,6 +338,9 @@ Docs warning: added a no-op __init__(**kwargs) (mirroring Transpose) so the docu
 - `tests/test_inversion.py` (new — 9 tests)
 - `docs/reference/transforms/inversion.md` (new — doc stub)
 - `zensical.toml` (nav entry)
+- `experiments/intensity_inversion_eval.py` (synthetic toy — local, not in PR)
+- `experiments/brats_inversion_eval.py` (BraTS real-data attempt — local, not in PR)
+- `experiments/chaos_inversion_eval.py` (CHAOS use-case-matched — local, not in PR)
   
 - **Key commits:** 
 
@@ -274,8 +365,9 @@ Docs warning: added a no-op __init__(**kwargs) (mirroring Transpose) so the docu
 **Maintainer Feedback:**
 - **2026-06-18**: Copilot (AI reviewer, Low severity) flagged that `zensical.toml`'s Intensity list is alphabetical and `inversion.md` was inserted out of order.
 - **2026-06-18**: Addressed in commit `ad36e2b` (moved it after `histogram_standardization.md`); replied and resolved the conversation.
+- **2026-06-19**: Maintainer: *"the results with the toy data are [not] significant enough … I'd like to see results on a real dataset and task."* Ran two real-data experiments (BraTS, then a corrected use-case-matched CHAOS run); reported the honest **null** real-data result (CHAOS 8-seed OOD gain +0.017, within noise) back on the thread rather than the inflated 3-seed figure.
 
-**Status:** [Awaiting review]
+**Status:** [Implementation complete & tested] [Real-data efficacy inconclusive — awaiting maintainer's merge decision]
 
 ---
 
@@ -287,18 +379,23 @@ Docs warning: added a no-op __init__(**kwargs) (mirroring Transpose) so the docu
 - Vectorized per-channel tensor ops with `amax`/`amin` + `keepdim` broadcasting over batch tensors.
 - Writing RNG-robust tests: understanding `pytest-randomly`, and why float32 round-trips need explicit tolerances.
 - The fork-based open-source workflow: fork/upstream remotes, `commit --amend` + `--force-with-lease` (before a PR exists) vs. additive commits (after), responding to review comments.
+- Building a real medical-imaging eval from scratch: BraTS (4D NIfTI) and CHAOS (DICOM + PNG masks) loading, 2D-slice segmentation with a MONAI U-Net on Apple MPS, Dice-only loss for class imbalance, and seed-paired OOD vs in-domain evaluation.
 
 ### Challenges Overcome
 
 - **Batch vs single-image semantics**: the plan's reference implementation was per-image, but the real API is batched — caught it by inspecting `ImagesBatch` shape rather than trusting the plan.
 - **Distinguishing my bug from the library's bug**: when the include/exclude inverse failed, I reproduced it on `Gamma` too, proving it was a pre-existing framework issue, not my code — which changed the fix from "patch my transform" to "work around locally + report upstream."
 - **Flaky test triage**: a test that passed alone but failed in the suite — traced to global-RNG reseeding rather than a logic error.
+- **Telling a broken experiment from a negative result**: the first BraTS run looked negative, but in-domain Dice was ~0.27 and one seed collapsed to 0 — the setup was broken (wrong target + BCE collapse), not evidence against the transform. I fixed the experiment before drawing any conclusion.
+- **Resisting a flattering number**: a 3-seed CHAOS run showed +0.068; adding seeds collapsed it to +0.017 (noise). Reporting the honest 8-seed null instead of the lucky 3-seed figure was the point.
 
 ### What I'd Do Differently Next Time
 
 - **Check the actual data shape/API contract before trusting a plan** — the per-channel batch dimension would have saved a rework.
 - **Set test tolerances deliberately from the start** when arithmetic + randomized data are involved, instead of relying on `assert_close` defaults.
 - **Verify ordering/style conventions** (alphabetical nav lists) before submitting, to pre-empt trivial review nits.
+- **Match the experiment to the actual use case from the start**: the BraTS rework was avoidable — the segmentation target must be visible in *every* modality (like the author's spine), not one that vanishes across them.
+- **Pick the number of seeds for the variance you have**: with ±0.15 per-seed swings, 3 seeds can manufacture a positive mean. Decide statistical power up front, not after seeing a result you like.
 
 ---
 
