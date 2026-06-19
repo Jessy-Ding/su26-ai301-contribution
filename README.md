@@ -197,50 +197,85 @@ benefit for this task" — itself a valuable result.
 
 ### Unit Tests
 
-- [ ] Test case 1: [Description]
-- [ ] Test case 2: [Description]
-- [ ] Test case 3: [Description]
+`tests/test_inversion.py` — 9 tests, all passing, robust under `pytest-randomly`:
+
+- **Test case 1 — `test_changes_data`**: applying the transform actually modifies intensity data.
+- **Test case 2 — `test_double_application_is_identity`**: applying inversion twice returns the original (self-inverse), within float32 tolerance.
+- **Test case 3 — `test_p_zero_is_noop`**: `p=0.0` leaves data unchanged (stochastic gate works).
+- `test_range_is_preserved`: per-channel min/max preserved after inversion.
+- `test_dark_and_bright_are_swapped`: the brightest voxel becomes the darkest and vice versa.
+- `test_per_channel`: two channels with mismatched ranges (`[0,100]` and `[-5,5]`) each invert within their own range — proves per-channel scope.
+- `test_inverse`: `apply_inverse_transform()` restores the original.
+- `test_inverse_respects_include`: with `include=["t1"]`, the inverse does **not** corrupt the un-inverted `t2` (regression guard for the framework bug I found).
+- `test_leaves_labels_unchanged`: `LabelMap` data is untouched.
 
 ### Integration Tests
 
-- [ ] Integration scenario 1
-- [ ] Integration scenario 2
+- **Integration scenario 1 — invertibility framework**: ran the transform through TorchIO's history/`apply_inverse_transform` machinery (not just the method in isolation), confirming registration in `_TRANSFORM_REGISTRY` and correct round-trip.
+- **Integration scenario 2 — full suite regression**: ran the entire `tests/` suite (**1257 passed, 4 skipped**) to confirm the new transform + exports + nav change broke nothing.
 
 ### Manual Testing
 
-[What you tested manually and results]
+- **Docs build**: `zensical build` → "No issues found" (verified the griffe `**kwargs` warning was resolved and the new nav entry renders).
+- **Efficacy experiment** (`experiments/intensity_inversion_eval.py`): synthetic polarity-holdout segmentation, 3 seeds, CPU. Result: OOD Dice **0.04 → 0.84**, in-domain **−0.02**, consistent across seeds; produced an overlay figure showing the baseline segmenting the inverted background while the inversion-trained model segments correctly.
+- **Flakiness hunt**: ran the suite 10× under randomized ordering + a 500-seed brute-force to confirm test tolerances were not RNG-fragile.
 
 ---
 
 ## Implementation Notes
 
-### Week [X] Progress
+### Week 1 Progress：Reproduce & design
 
-[What you built this week, challenges faced, decisions made]
+Confirmed the feature was missing (`reproduce_1187.py`), pinned the intended behavior (`max − x + min`, per channel), and resolved the key design question: **deterministic transform, not a `Random*` wrapper** — probability-of-application is already a base-class concern (`p`), matching v2's merge of `RandomGamma` into `Gamma`.
 
-### Week [Y] Progress
+### Week 2 Progress：Implement & test
 
-[Continue documenting as you work]
+Built the transform, exports, docs, and tests. Key challenge: the plan assumed a single-image (C, …) tensor, but in v2 apply_transform operates on a (B, C, I, J, K) batch — so min/max had to be computed per channel over the spatial dims (vectorized amax/amin), not via the naive per-channel loop. A naive loop would have treated the batch dim as channels.
+
+### Week 3 Progress：Review hardening
+
+Three issues surfaced and were fixed:
+
+Found a pre-existing framework bug (filed as #1480): the transform history stores only name+params, dropping include/exclude, so the inverse corrupts un-transformed images — Gamma is affected too. Worked around it locally by recording processed image names in make_params and scoping the inverse via include.
+Test flakiness: pytest-randomly reseeds the global RNG; default assert_close float32 tolerance (1e-5) was too tight for ×100 data round-trips (worst-case error ~1.5e-5). Applied the codebase's atol=1e-4 convention.
+Docs warning: added a no-op __init__(**kwargs) (mirroring Transpose) so the documented **kwargs resolves to a real signature.
 
 ### Code Changes
 
-- **Files modified:** [List]
-- **Key commits:** [Links to important commits]
-- **Approach decisions:** [Why you chose certain approaches]
+- **Files modified:**
+  
+- `src/torchio/transforms/intensity/inversion.py` (new — the transform)
+- `src/torchio/transforms/__init__.py` (export)
+- `src/torchio/__init__.py` (top-level export + `__all__`)
+- `tests/test_inversion.py` (new — 9 tests)
+- `docs/reference/transforms/inversion.md` (new — doc stub)
+- `zensical.toml` (nav entry)
+  
+- **Key commits:** 
+
+- [d84ba50](https://github.com/TorchIO-project/torchio/pull/1482/commits/d84ba50e) — Add IntensityInversion transform
+- [ad36e2b](https://github.com/TorchIO-project/torchio/pull/1482/commits/ad36e2b0) — Sort inversion.md alphabetically in docs nav (review feedback)
+
+- **Approach decisions:** 
+
+- Deterministic transform + base-class `p` instead of a `Random*` class (less API surface, matches v2 conventions).
+- Per-channel (not global) min/max — a global reflection would leak one channel's scale into another.
+- Local include/exclude-safe inverse rather than a framework rewrite — keeps PR scope tight; the root-cause fix is tracked separately in #1480.
+- Synthetic CPU toy for efficacy evidence rather than a real multi-sequence dataset — reproducible by any reviewer in minutes and isolates the single variable (intensity polarity).
 
 ---
 
 ## Pull Request
 
-**PR Link:** [GitHub PR URL when submitted]
+**PR Link:** [GitHub PR URL submitted](https://github.com/TorchIO-project/torchio/pull/1482)
 
-**PR Description:** [Draft or final PR description - much of the content above can be adapted]
+**PR Description:** _(as submitted — see `pr_body.md`)_ Adds `IntensityInversion`, a deterministic per-channel intensity inversion (`max − x + min`); stochastic via the base-class `p`; self-inverse with an `include`/`exclude`-safe inverse; CT scope caveat in the docstring. References (does not close) the umbrella issue #1187, and notes the #1480 framework bug it works around. Includes efficacy evidence (synthetic toy, 3 seeds).
 
 **Maintainer Feedback:**
-- [Date]: [Summary of feedback received]
-- [Date]: [How you addressed it]
+- **2026-06-18**: Copilot (AI reviewer, Low severity) flagged that `zensical.toml`'s Intensity list is alphabetical and `inversion.md` was inserted out of order.
+- **2026-06-18**: Addressed in commit `ad36e2b` (moved it after `histogram_standardization.md`); replied and resolved the conversation.
 
-**Status:** [Awaiting review / Iterating / Approved / Merged]
+**Status:** [Awaiting review]
 
 ---
 
@@ -248,20 +283,30 @@ benefit for this task" — itself a valuable result.
 
 ### Technical Skills Gained
 
-[What you learned technically]
+- The TorchIO v2 transform API: `IntensityTransform`, `make_params`/`apply_transform` over a `SubjectsBatch`, and the invertibility/history framework (`AppliedTransform`, `get_inverse_transform`).
+- Vectorized per-channel tensor ops with `amax`/`amin` + `keepdim` broadcasting over batch tensors.
+- Writing RNG-robust tests: understanding `pytest-randomly`, and why float32 round-trips need explicit tolerances.
+- The fork-based open-source workflow: fork/upstream remotes, `commit --amend` + `--force-with-lease` (before a PR exists) vs. additive commits (after), responding to review comments.
 
 ### Challenges Overcome
 
-[What was hard and how you solved it]
+- **Batch vs single-image semantics**: the plan's reference implementation was per-image, but the real API is batched — caught it by inspecting `ImagesBatch` shape rather than trusting the plan.
+- **Distinguishing my bug from the library's bug**: when the include/exclude inverse failed, I reproduced it on `Gamma` too, proving it was a pre-existing framework issue, not my code — which changed the fix from "patch my transform" to "work around locally + report upstream."
+- **Flaky test triage**: a test that passed alone but failed in the suite — traced to global-RNG reseeding rather than a logic error.
 
 ### What I'd Do Differently Next Time
 
-[Reflection on your process]
+- **Check the actual data shape/API contract before trusting a plan** — the per-channel batch dimension would have saved a rework.
+- **Set test tolerances deliberately from the start** when arithmetic + randomized data are involved, instead of relying on `assert_close` defaults.
+- **Verify ordering/style conventions** (alphabetical nav lists) before submitting, to pre-empt trivial review nits.
 
 ---
 
 ## Resources Used
 
 - [Link to helpful documentation]
+  
 - [Tutorial or Stack Overflow post that helped]
+
 - [GitHub issues or discussions that helped]
+- [issue 1187](https://github.com/TorchIO-project/torchio/issues/1187)
