@@ -118,44 +118,78 @@ Using UMPIRE framework (adapted):
 
 *Layer 2 — Efficacy (evidence the maintainer requested).*
 
+The maintainer asked for a **basic experiment on a toy problem** ("run training
+with vs without and compare"). We deliberately do **not** use BraTS or any other
+real multi-sequence dataset: it requires downloads/registration/GPU (no reviewer
+will reproduce it) and it mixes confounds (resolution, noise, anatomy contrast)
+into the comparison, making any gain hard to attribute to inversion alone. A
+**self-contained synthetic toy** meets the maintainer's minimum, runs on CPU in
+minutes, is fully reproducible, and isolates the single variable we care about
+(intensity polarity). We are not required to go beyond this; we add only the two
+robustness checks below so the result cannot be dismissed.
+
 **Hypothesis (pre-registered, to avoid post-hoc rationalizing):**
-- When the train and test intensity distributions differ (across MRI sequences),
-- training with `IntensityInversion(p=0.5)` augmentation **improves generalization to unseen intensity distributions** (higher Dice on a held-out sequence), while **not significantly harming** in-domain performance.
-This maps directly onto the issue's original motivation (single-sequence training → multi-sequence generalization).
+> When the train and test intensity distributions differ in polarity,
+> training with `IntensityInversion(p=0.5)` **improves generalization to the
+> unseen (inverted-contrast) distribution** (higher Dice), while **not
+> significantly harming** in-domain (same-polarity) performance.
 
-**Experiment design — cross-modality holdout:**
+This maps directly onto the issue's original motivation (single-distribution
+training → cross-distribution generalization) and onto the maintainer's "is it
+useful" question.
 
-| Element          | Setting                                                                                                                                                                         |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Data             | A public **multi-contrast MRI** dataset, e.g. BraTS (each case has T1/T1ce/T2/FLAIR with a shared segmentation label) — natural fit: large intensity differences, shared labels |
-| Task             | 2D/3D U-Net segmentation (slice-based is fine, lowers compute)                                                                                                                  |
-| Train            | **One sequence only** (e.g. T1)                                                                                                                                                 |
-| Test             | A sequence **unseen at train time** (e.g. FLAIR) = simulated modality shift                                                                                                     |
-| Arm A (baseline) | Standard augmentation: flip / affine / noise                                                                                                                                    |
-| Arm B            | A + `IntensityInversion(p=0.5)` — the **only** changed variable                                                                                                                 |
-| Metric           | Dice on the held-out sequence (primary); Dice in-domain (guard against degradation)                                                                                             |
-| Stats            | ≥3 random seeds; report mean ± std; paired test (Arm A vs B at the same seed)                                                                                                   |
+**Experiment design — synthetic polarity holdout (CPU, no downloads):**
 
-**Success criterion (set in advance):** Arm B's held-out Dice is significantly higher than Arm A's (paired test, p < 0.05), and in-domain Dice drops by < 1–2 points. If met → evidence supports addition. If not met → honestly report "no benefit for this task" — itself a valuable result.
+| Element | Setting |
+|---|---|
+| Data | Procedurally generated 2D images: random shapes (circles/squares) as foreground, **foreground brighter than background** |
+| Label | The shape mask (segmentation task) |
+| Train | **Bright-foreground polarity only** |
+| Test (OOD) | **Inverted-contrast** (foreground darker than background) = simulated distribution shift |
+| Test (in-domain) | Held-out **bright-foreground** images (guard against degradation) |
+| Arm A (baseline) | Standard augmentation: flip / affine / noise |
+| Arm B | A + `IntensityInversion(p=0.5)` — the **only** changed variable |
+| Metric | Dice on the inverted test set (primary); Dice on the in-domain test set (guard) |
+| Stats | 3 random seeds; report mean ± std; paired (Arm A vs B at the same seed) |
+
+**Success criterion (set in advance):** Arm B's inverted-test Dice is clearly
+higher than Arm A's (consistent across seeds), and in-domain Dice drops by < 1–2
+points. If met → evidence supports addition. If not met → honestly report "no
+benefit for this task" — itself a valuable result.
 
 **Methodological discipline (or the evidence gets rejected):**
-1. **Single variable:** A and B share data / model / LR / seed / steps; only the added augmentation differs.
-2. **Seed-paired:** Arm A seed 0 vs Arm B seed 0, so the difference is attributed to the augmentation, not initialization noise.
-3. **Report in-domain too:** reporting only the cross-modality gain while hiding whether in-domain degraded is a buried risk; report both.
-4. **Honest about CT:** the maintainer specifically flagged CT. CT intensities (Hounsfield units) are physically meaningful and standardized, so inversion may be **harmful** there. Therefore:
-	- **Narrow the scope:** claim this is an **MRI cross-sequence** augmentation; do **not** claim benefit for CT.
-	- Optional bonus: run a small CT experiment; if it shows neutral/harmful, document "not recommended for CT" — that honesty makes the maintainer more likely to merge.
+1. **Single variable:** A and B share data / model / LR / seed / steps; only the
+   added augmentation differs.
+2. **Seed-paired:** Arm A seed 0 vs Arm B seed 0, so the difference is attributed
+   to the augmentation, not initialization noise.
+3. **Report in-domain too:** reporting only the OOD gain while hiding whether
+   in-domain degraded is a buried risk; report both.
+4. **Honest about CT:** the maintainer specifically flagged CT. CT intensities
+   (Hounsfield units) are physically meaningful and standardized, so inversion may
+   be **harmful** there. We **narrow the scope** — claim this is an MRI-style
+   cross-contrast augmentation and do **not** claim benefit for CT.
 
-**Minimum viable version (limited compute):**
-- A BraTS subset, 2D axial slices, a small U-Net, a few hundred steps; or
-- A **mechanism-isolation synthetic experiment** first: on a single-sequence dataset, construct a test-time intensity transform the model never saw during training (simulated modality shift), and check whether A/B narrows the generalization gap. This cheaply validates the mechanism before scaling to real multi-sequence data.
+**Two robustness checks (so the toy result can't be dismissed):**
+1. **Test perturbation ≠ training augmentation.** The training augmentation is the
+   exact linear inversion `max - x + min`. If the OOD test set were built with the
+   *same* formula, Arm B would essentially be tested on the one transform it was
+   trained on — that proves memorization, not generalization. So the test set uses
+   a **different monotonic intensity-decreasing map** (e.g. gamma-then-invert, or a
+   random piecewise-linear inversion curve): bright↔dark order is flipped, but it
+   is **not** that exact line. If B still wins, it has learned the more general
+   invariance "don't rely on absolute brightness polarity," not a memorized curve.
+2. **Report in-domain Dice as a no-side-effect guard.** Besides the inverted test
+   set, evaluate a same-polarity (in-distribution) test set. If B matches A there
+   (drop < 1–2 points), the cross-polarity generalization came **for free**,
+   without sacrificing the original task.
 
 **Deliverables (to post back on the issue/PR):**
-- A reproducible `experiments/intensity_inversion_eval.py` (fixed seeds);
-- A table: `{sequence pair, Arm A Dice, Arm B Dice, Δ, p-value}` across seeds;
-- One or two qualitative figures: the same held-out slice, A vs B segmentation overlays;
+- A reproducible `experiments/intensity_inversion_eval.py` (fixed seeds, CPU);
+- A table: `{Arm A Dice, Arm B Dice, Δ}` for both the inverted and in-domain test
+  sets, across seeds;
+- One or two qualitative figures: the same inverted test image, A vs B
+  segmentation overlays;
 - A conclusion plus the CT scope statement.
-
 
 ---
 
