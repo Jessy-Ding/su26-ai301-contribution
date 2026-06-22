@@ -471,9 +471,4 @@ add. The PR was subsequently closed by the lead maintainer.
 
 ## Resources Used
 
-- [Link to helpful documentation]
-  
-- [Tutorial or Stack Overflow post that helped]
-
-- [GitHub issues or discussions that helped]
 - [issue 1187](https://github.com/TorchIO-project/torchio/issues/1187)
