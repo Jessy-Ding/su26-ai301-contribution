@@ -364,15 +364,13 @@ Confirmed the feature was missing (`reproduce_1187.py`), pinned the intended beh
 
 Built the transform, exports, docs, and tests. Key challenge: the plan assumed a single-image (C, …) tensor, but in v2 apply_transform operates on a (B, C, I, J, K) batch — so min/max had to be computed per channel over the spatial dims (vectorized amax/amin), not via the naive per-channel loop. A naive loop would have treated the batch dim as channels.
 
-### Week 3 Progress：Review hardening
+### Week 3 Progress：Review hardening & Efficacy under real data & Cross-organ sweep & SOTA comparison
 
 Three issues surfaced and were fixed:
 
 Found a pre-existing framework bug (filed as #1480): the transform history stores only name+params, dropping include/exclude, so the inverse corrupts un-transformed images — Gamma is affected too. Worked around it locally by recording processed image names in make_params and scoping the inverse via include.
 Test flakiness: pytest-randomly reseeds the global RNG; default assert_close float32 tolerance (1e-5) was too tight for ×100 data round-trips (worst-case error ~1.5e-5). Applied the codebase's atol=1e-4 convention.
 Docs warning: added a no-op __init__(**kwargs) (mirroring Transpose) so the documented **kwargs resolves to a real signature.
-
-### Week 4 Progress: Efficacy under real data
 
 The maintainer rejected the toy as insufficient and asked for a real dataset and
 task. This was the hardest part of the contribution — see the **Efficacy
@@ -384,8 +382,6 @@ target visible in every modality (liver on CHAOS T1<->T2) and a Dice-only loss;
 (c) the corrected, use-case-matched experiment showed **no reliable benefit**
 (8-seed OOD gain +0.017, within noise). I reported the negative result honestly
 rather than the misleading 3-seed +0.068 that one lucky seed produced.
-
-### Week 5 Progress: Cross-organ sweep & SOTA comparison
 
 Pushed the investigation to a real conclusion rather than stopping at "inversion is
 weak": (a) swept augmentation strategies across all 4 CHAOS organs to find the most
@@ -436,7 +432,7 @@ add. The PR was subsequently closed by the lead maintainer.
 - **2026-06-19**: Maintainer: *"the results with the toy data are [not] significant enough … I'd like to see results on a real dataset and task."* Ran two real-data experiments (BraTS, then a corrected use-case-matched CHAOS run); reported the honest **null** real-data result (CHAOS 8-seed OOD gain +0.017, within noise) back on the thread rather than the inflated 3-seed figure.
 - **2026-06-20**: Co-developer (@romainVala) engaged constructively and suggested trying stronger random *non-linear* intensity deformation (and large gamma). I tested this: a GIN-style transform and a full domain-randomization suite, ablated across 4 organs.
 - **2026-06-21**: Findings — single transforms (inversion included) are unreliable; the DR-suite helps consistently (+0.125, 4/4 organs); a SynthSeg-style approach via TorchIO's own `LabelsToImage` roughly doubles that (+0.310). Reported the full ladder honestly, noting `IntensityInversion` is the weakest piece and the SOTA path already exists in TorchIO.
-- **2026-06-22**: Lead maintainer (@fepegar) closed the PR, preferring to spend time on v2 bugs over a transform of marginal usefulness. A fair triage call for an alpha (and consistent with my own data); the framing was blunt. Outcome accepted.
+- **2026-06-22**: Lead maintainer closed the PR, preferring to spend time on v2 bugs over a transform of marginal usefulness. Outcome accepted.
 
 **Status:** [Implementation complete & tested] [PR closed by maintainer] [investigation: inversion is a minor augmentation; SOTA (SynthSeg) already in TorchIO]
 
