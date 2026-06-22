@@ -3,7 +3,7 @@
 **Contribution Number:** [1]  
 **Student:** [Mengyuan Ding]  
 **Issue:** [[GitHub issue link](https://github.com/TorchIO-project/torchio/issues/1187)]  
-**Status:** [Phase II] [In Progress]
+**Status:** [Phase II] [Closed by maintainer — investigation complete]
 
 ---
 
@@ -262,36 +262,95 @@ This experiment does **not** represent the issue author's scenario, where the
 target is a structure visible in *every* modality. Reported here for transparency,
 not as evidence. Script: `experiments/brats_inversion_eval.py`.
 
-### Stage 3 — CHAOS cross-modality (use-case-matched) — NO RELIABLE BENEFIT
+### Stage 3 — CHAOS cross-modality (use-case-matched), inversion alone — WEAK
 
 The issue author's real situation: an anatomical structure visible in all
-modalities, where only the intensity distribution changes. The CHAOS dataset
-matches this — the same abdominal organs imaged in **T1-DUAL** and **T2-SPIR**.
-Liver segmentation, train on **T1 (in-phase)**, test on held-out **T2-SPIR**,
-Dice-only loss, **8 seeds**.
+modalities, where only the intensity distribution changes. CHAOS matches this —
+the same abdominal organs imaged in **T1-DUAL** and **T2-SPIR**. Liver
+segmentation, train on **T1 (in-phase)**, test on held-out **T2-SPIR**, 8 seeds.
 
-| Test set | Arm A | Arm B | Δ |
-|---|---|---|---|
-| OOD (T2) | 0.211 ± 0.069 | 0.228 ± 0.062 | **+0.017** |
-| in-domain (T1) | 0.698 ± 0.022 | 0.667 ± 0.021 | −0.032 |
+`IntensityInversion` alone: ΔOOD **+0.017** (4/8 seeds, within noise; an early
+3-seed run looked like +0.068, but that was one lucky seed — power matters). So
+inversion on its own barely helps real cross-modality transfer.
 
-Per-seed ΔOOD: `+0.057, +0.164, −0.018, −0.147, +0.048, −0.005, −0.103, +0.140`
-→ **4 up / 4 down**, swings of ±0.15. The gain is within noise. (A 3-seed run
-first looked like +0.068, but that was one lucky seed — adding seeds collapsed it
-to +0.017. This is exactly why statistical power matters, and why I will not
-report the 3-seed number.) Script: `experiments/chaos_inversion_eval.py`.
+### Stage 4 — Cross-organ augmentation ladder (4 organs, 5 seeds)
 
-### Interpretation & honest conclusion
+I then compared augmentation strategies across all 4 CHAOS organs (liver, spleen,
+both kidneys), training T1 → testing T2. Mean ΔOOD vs baseline:
 
-Real multi-sequence MRI intensity differences are **not** a global polarity
-inversion — they are non-linear, tissue-specific, and reshape the whole
-histogram. Inversion only addresses the polarity-flip component, which is not the
-dominant mode of real cross-modality variation, so it does not reliably bridge
-the gap. On this evidence, the efficacy case for cross-sequence generalization
-does **not** hold up, and the maintainer's skepticism was justified. The negative
-result is itself useful: it tells the issue author that intensity inversion alone
-will not solve their cross-modality problem. The implementation is correct and
-tested regardless; whether it is *useful enough to add* is the maintainer's call.
+| augmentation | mean ΔOOD | organs positive |
+|---|---|---|
+| `IntensityInversion` | +0.014 | 3/4 |
+| random non-linear remap (GIN-style conv) | +0.039 | 4/4 |
+| **full intensity suite** (gamma + bias field + inversion + GIN) | **+0.125** | **4/4 (19/20 seeds)** |
+
+Takeaway: no single transform reliably helps — but **stacking strong intensity
+transforms into a domain-randomization suite does**, consistently across organs.
+Which single component matters flips by organ (inversion carries liver, GIN
+carries spleen), so the diversity of the suite is what's robust, not any one
+transform. `IntensityInversion` is the **weakest** of the augmentations tested.
+
+### Stage 5 — SOTA comparison: SynthSeg (synthesis from labels)
+
+The real SOTA for cross-contrast is not augmenting the real image at all, but
+**generating training images from the label maps** with randomized contrast
+(SynthSeg, Billot et al. 2023). I implemented this on the same task — and the key
+discovery: **TorchIO already ships the primitive, `tio.LabelsToImage`** (its
+docstring literally calls itself the SynthSeg building block). Composed with
+`Blur` + `BiasField` + noise, it is contrast-agnostic training with no new code.
+
+Head-to-head, 4 organs, 5 seeds, mean ΔOOD vs baseline:
+
+| approach | mean ΔOOD | organs positive |
+|---|---|---|
+| our full DR-suite (augment real T1) | +0.125 | 4/4 |
+| **SynthSeg via `tio.LabelsToImage`** (synthesize from labels) | **+0.310** | **4/4 (18/20 seeds)** |
+
+SynthSeg roughly **doubles** the suite's gain, and wins biggest exactly where the
+baseline fails worst (small organs nearly invisible after the contrast switch:
+~0.02 → ~0.4 Dice). It trades peak in-domain accuracy for genuine
+contrast-invariance — it performs similarly on T1 and T2, which is the point for
+multi-contrast deployment. (Honest nuance: on liver, the only non-degenerate
+organ, the suite actually edges SynthSeg; SynthSeg's dominance is on the hard
+organs.)
+
+### Final honest conclusion
+
+```
+baseline  <  inversion  <  GIN  <  DR-suite  <<  SynthSeg (synthesis)
+              +0.014      +0.039   +0.125         +0.310
+```
+
+`IntensityInversion` is a legitimate but **minor** augmentation — the weakest
+thing I tested. The capability that actually addresses the issue author's
+cross-sequence problem (SynthSeg-style synthesis) is **already in TorchIO** via
+`LabelsToImage`. The implementation is correct and tested regardless; whether it
+is *useful enough to add* is the maintainer's call.
+
+**Caveats (so this isn't oversold):** one dataset, 2D slices, small model, few
+seeds; my SynthSeg uses pseudo-tissue labels (intensity binning) since CHAOS has
+only organ masks — real anatomical labels would only help it, so this if anything
+*understates* the gap. The findings reproduce known single-source domain-
+generalization results (BigAug, GIN), not anything new.
+
+---
+
+## Related work & where this sits
+
+This work rediscovered, empirically, what the literature already established —
+useful for calibrating my own contribution honestly:
+
+- **SynthSeg** — Billot et al., *Medical Image Analysis* 2023 ([arXiv 2107.09559](https://arxiv.org/abs/2107.09559)).
+  Train on synthetic random-contrast images generated from label maps; segments
+  any contrast without retraining. The strongest cross-contrast approach, and the
+  one TorchIO supports via `LabelsToImage`.
+- **Contrast-agnostic spinal cord segmentation** — Bédard et al., *MedIA* 2025
+  ([arXiv 2310.15402](https://arxiv.org/abs/2310.15402)). The issue author's exact
+  problem; a single nnU-Net + soft labels + aggressive augmentation, shipped in
+  **Spinal Cord Toolbox (`sct_deepseg`)** — likely usable off the shelf.
+- **Single-source domain generalization augmentation family:** BigAug (Zhang
+  2020), GIN/IPA (Ouyang, *IEEE-TMI* 2022), RandConv (Xu, *ICLR* 2021). My
+  "DR-suite" and "GIN" arms are reimplementations of these.
 
 ---
 
@@ -325,6 +384,17 @@ target visible in every modality (liver on CHAOS T1<->T2) and a Dice-only loss;
 (c) the corrected, use-case-matched experiment showed **no reliable benefit**
 (8-seed OOD gain +0.017, within noise). I reported the negative result honestly
 rather than the misleading 3-seed +0.068 that one lucky seed produced.
+
+### Week 5 Progress: Cross-organ sweep & SOTA comparison
+
+Pushed the investigation to a real conclusion rather than stopping at "inversion is
+weak": (a) swept augmentation strategies across all 4 CHAOS organs to find the most
+cross-organ-robust one — the full domain-randomization suite wins, inversion is the
+weakest single transform; (b) compared against the SOTA, SynthSeg, and found it roughly
+doubles the suite — then discovered TorchIO already ships the SynthSeg primitive
+(`LabelsToImage`); (c) grounded everything in the domain-generalization literature.
+Net: the genuinely useful capability already exists in TorchIO; my transform is a minor
+add. The PR was subsequently closed by the lead maintainer.
 
 ### Code Changes
 
@@ -364,8 +434,11 @@ rather than the misleading 3-seed +0.068 that one lucky seed produced.
 - **2026-06-18**: Copilot (AI reviewer, Low severity) flagged that `zensical.toml`'s Intensity list is alphabetical and `inversion.md` was inserted out of order.
 - **2026-06-18**: Addressed in commit `ad36e2b` (moved it after `histogram_standardization.md`); replied and resolved the conversation.
 - **2026-06-19**: Maintainer: *"the results with the toy data are [not] significant enough … I'd like to see results on a real dataset and task."* Ran two real-data experiments (BraTS, then a corrected use-case-matched CHAOS run); reported the honest **null** real-data result (CHAOS 8-seed OOD gain +0.017, within noise) back on the thread rather than the inflated 3-seed figure.
+- **2026-06-20**: Co-developer (@romainVala) engaged constructively and suggested trying stronger random *non-linear* intensity deformation (and large gamma). I tested this: a GIN-style transform and a full domain-randomization suite, ablated across 4 organs.
+- **2026-06-21**: Findings — single transforms (inversion included) are unreliable; the DR-suite helps consistently (+0.125, 4/4 organs); a SynthSeg-style approach via TorchIO's own `LabelsToImage` roughly doubles that (+0.310). Reported the full ladder honestly, noting `IntensityInversion` is the weakest piece and the SOTA path already exists in TorchIO.
+- **2026-06-22**: Lead maintainer (@fepegar) closed the PR, preferring to spend time on v2 bugs over a transform of marginal usefulness. A fair triage call for an alpha (and consistent with my own data); the framing was blunt. Outcome accepted.
 
-**Status:** [Implementation complete & tested] [Real-data efficacy inconclusive — awaiting maintainer's merge decision]
+**Status:** [Implementation complete & tested] [PR closed by maintainer] [investigation: inversion is a minor augmentation; SOTA (SynthSeg) already in TorchIO]
 
 ---
 
@@ -378,6 +451,7 @@ rather than the misleading 3-seed +0.068 that one lucky seed produced.
 - Writing RNG-robust tests: understanding `pytest-randomly`, and why float32 round-trips need explicit tolerances.
 - The fork-based open-source workflow: fork/upstream remotes, `commit --amend` + `--force-with-lease` (before a PR exists) vs. additive commits (after), responding to review comments.
 - Building a real medical-imaging eval from scratch: BraTS (4D NIfTI) and CHAOS (DICOM + PNG masks) loading, 2D-slice segmentation with a MONAI U-Net on Apple MPS, Dice-only loss for class imbalance, and seed-paired OOD vs in-domain evaluation.
+- Benchmarking against SOTA: implementing a SynthSeg-style synthesis pipeline and learning that TorchIO already exposes the primitive (`LabelsToImage`); grounding empirical results in the domain-generalization literature (SynthSeg, BigAug, GIN, RandConv, contrast-agnostic SCT).
 
 ### Challenges Overcome
 
@@ -394,6 +468,8 @@ rather than the misleading 3-seed +0.068 that one lucky seed produced.
 - **Verify ordering/style conventions** (alphabetical nav lists) before submitting, to pre-empt trivial review nits.
 - **Match the experiment to the actual use case from the start**: the BraTS rework was avoidable — the segmentation target must be visible in *every* modality (like the author's spine), not one that vanishes across them.
 - **Pick the number of seeds for the variance you have**: with ±0.15 per-seed swings, 3 seeds can manufacture a positive mean. Decide statistical power up front, not after seeing a result you like.
+- **Treat "is it useful?" as a real research question, not a formality**: the most valuable output here was a rigorous negative/comparative result, not a merged PR. Running the experiments (rather than asserting usefulness) is what made the contribution honest.
+- **Open-source reality**: a clean, tested PR can still be closed on a priority call — that is normal and not a verdict on the work. Keep maintainer comms short and human; long, citation-heavy (AI-sounding) threads invite dismissal regardless of the substance.
 
 ---
 
