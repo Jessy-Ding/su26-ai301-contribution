@@ -3,7 +3,7 @@
 **Contribution Number:** [1]  
 **Student:** [Mengyuan Ding]  
 **Issue:** [[GitHub issue link](https://github.com/TorchIO-project/torchio/issues/1187)]  
-**Status:** [Phase II] [Closed by maintainer — investigation complete]
+**Status:** [Phase IV] [Closed by maintainer — investigation complete]
 
 ---
 
